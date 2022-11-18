@@ -5,6 +5,7 @@ import serial
 import time
 import struct
 import os
+import sys
 import RPi.GPIO as GPIO
 import numpy as np
 import serial
@@ -51,9 +52,11 @@ class CanData():
     
     def __init__(self):
         self.DRIVE_ARR = [int("00",16), int("80",16), int("84",16), int("44",16), 0x00, 0x00, 0x00, 0x00]
+        #self.DRIVE_ARR = [0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00]
+
         self.REVERSE_ARR = [int("00",16), int("80",16), int("84",16), int("c4",16), 0x00, 0x00, 0x00, 0x00]
         self.NEUTRAL_ARR = [int("00",16), int("80",16), int("84",16), int("44",16), 0x00, 0x00, 0x00, 0x00]
-        self.BRAKE_ARR = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        self.BRAKE_ARR = [0, 0, 0, 0, 0x00, 0x00, 0x00, 0x00]
 
         self._CanData_observers = []
 
@@ -147,7 +150,7 @@ class RawCan():
         else:
             if potential > self.raw_max_brake_potential:
                 self.raw_max_brake_potential = potential
-            elif potential != 0 and potential < self.raw_min_brake_potential:
+            elif potential < self.raw_min_brake_potential:
                 self.raw_min_brake_potential = potential
     
     # Return raw gas
@@ -254,11 +257,11 @@ class DriveCan():
 
             #print(self.DRIVE_ARR)                
             
-            if self.drive_state == 1 and self.is_braking() == False:
+            if (self.drive_state == 1) and (self.is_braking() == False) and current_gas_pot > 0:
                 
                 for i in range(4,len(self.DRIVE_ARR)):
                     self.DRIVE_ARR[i] = VELOCITY_ARR[len(self.DRIVE_ARR) - 1 - i]
-                print("IS DRIVING POT: " + str(current_gas_pot))
+                print("DRIVING POT: " + str(current_gas_pot))
                 #Sending potentiometer value on can
                 try:
                     self.can_send.send_msg(0x501, self.DRIVE_ARR)
@@ -267,10 +270,10 @@ class DriveCan():
                     pass
                     print("FAILED DRIVE_ARR")
                 
-            elif self.drive_state == 2 and self.is_braking() == False:
+            elif self.drive_state == 2 and self.is_braking() == False and current_gas_pot > 0:
 
                 for i in range(4,len(self.REVERSE_ARR)):
-                    self.REVERSE_ARR[i] = VELOCITY_ARR[len(self.REVERSE_ARR)-1 - i]
+                    self.REVERSE_ARR[i] = VELOCITY_ARR[len(self.REVERSE_ARR) - 1 - i]
                     
                 try:
                     self.can_send.send_msg(0x501, self.REVERSE_ARR)
@@ -278,11 +281,16 @@ class DriveCan():
                 except Exception as e:
                     pass
                     print("FAILED REVERSE")
+            else:
+                for i in range(4, len(self.DRIVE_ARR)):
+                    self.DRIVE_ARR[i] = 0
+                    self.REVERSE_ARR[i] = 0
 
         self.update_data()
 
     def is_braking(self) -> bool:
-        if self.BRAKE_ARR[0] != 0:
+        last_index = len(self.BRAKE_ARR) - 1
+        if self.BRAKE_ARR[last_index] != 0:
             return True
         else:
             return False
@@ -342,12 +350,11 @@ class BrakeCan():
         try:
             brake_potential = self.potential.get_brake_pot()
 
-            # THe higher offset = lower noise
-            brake_offset = 0
+            # The higher offset = lower noise
+            brake_offset = 5
 
             #Setting max brake allowed
-            max_brake_allowed = 0.2
-
+            max_brake_allowed = 0.1
             brake_potential = round((brake_potential - (self.min_brake_potential + brake_offset))/(self.max_brake_potential - self.min_brake_potential),2) #- float(start_potential)
                 
             if brake_potential > 1:
@@ -355,33 +362,53 @@ class BrakeCan():
             if brake_potential < 0:
                 brake_potential = 0
 
-            if brake_potential > self.brake_potential_before - 0.2 or self.read_can.bus_current > -50:
-                print("Current bus current: " + str(self.read_can.bus_current))
+            if self.read_can.bus_current < -50:
                 brake_potential = self.brake_potential_before
+                
+            if brake_potential > max_brake_allowed:
+                brake_potential = max_brake_allowed
+                #print("Current bus current: " + str(self.read_can.bus_current))
+                
             
             self.brake_potential_before = brake_potential
             return brake_potential
         except Exception as e:
-            print("FAILED READING brake POTENTIAL" + str(e))
+            error, obj, line = sys.exc_info()
+            print("FAILED READING brake POTENTIAL" + str(e) + " line: " + str(line.tb_lineno))
             return self.brake_potential_before
 
     def send_brake(self):
-        brake_potential = self.get_brake_potential()
-        if self.is_driving() == True:
-            return
-        else:
-            VELOCITY_ARR = self.decrypt.float_to_hex_msg(brake_potential)
-            for i in range(len(VELOCITY_ARR)):
-                self.BRAKE_ARR[i] = VELOCITY_ARR[len(VELOCITY_ARR) - 1 - i]
-            
+        self.send_can.send_bus_voltage()
+        current_brake_pot = self.get_brake_potential()
 
-            print("IS BRAKING POT: " + str(brake_potential) + "\n" + "BIT DATA: " + str(self.BRAKE_ARR))
+        if current_brake_pot > 0 and self.is_driving() == False:
+            VELOCITY_ARR = self.decrypt.float_to_hex_msg(current_brake_pot)
+
+            
+            for i in range(4,len(self.BRAKE_ARR)):
+                self.BRAKE_ARR[i] = VELOCITY_ARR[len(self.BRAKE_ARR) - 1 - i]
+            print("BRAKE POT: " + str(current_brake_pot) + ", BRAKE ARR: " + str(self.BRAKE_ARR))
+
+            #Sending potentiometer value on can
+            try:
+                self.send_can.send_msg(0x501, self.BRAKE_ARR)
+                #print("PASS POTENTIO")
+            except Exception as e:
+                pass
+                print("FAILED BRAKE_ARR " + str(e))
+        else:
+            for i in range(4, len(self.DRIVE_ARR)):
+                self.DRIVE_ARR[i] = 0
+                self.REVERSE_ARR[i] = 0
+
         self.update_data()
 
 
     def is_driving(self):
         last_index = len(self.DRIVE_ARR) - 1
-        if self.DRIVE_ARR[last_index] != 0 or self.REVERSE_ARR[last_index] != 0:
+        if (self.DRIVE_ARR[last_index] != 0) or (self.REVERSE_ARR[last_index] != 0):
+            print("Drive arr: " + str(self.DRIVE_ARR))
+            print("Reverse arr: " + str(self.REVERSE_ARR))
             return True
         else:
             return False
@@ -419,10 +446,10 @@ class BrakeCan():
 
 class DriveCar(CanData):
 
-    def __init__(self) -> None:
+    def __init__(self, canReader: ReaderCan) -> None:
         CanData.__init__(self)
         
-        self.brake_can = BrakeCan(self, None)
+        self.brake_can = BrakeCan(self, canReader)
         self.drive_can = DriveCan(self)
         self.attach(self.brake_can)
         self.attach(self.drive_can)
@@ -445,9 +472,10 @@ if __name__ == "__main__":
     #drive.min_gas_potential = 300
     #drive.set_drive()
 
-    car = DriveCar()
-    car.brake_can.max_brake_potential = 600
-    car.brake_can.max_brake_potential = 300
+    read_can = ReaderCan()
+    car = DriveCar(read_can)
+    car.brake_can.max_brake_potential = 180.68
+    car.brake_can.max_brake_potential = 110
     #car.drive_can.max_gas_potential = 600
     #car.drive_can.min_gas_potential = 300
     while 1:
