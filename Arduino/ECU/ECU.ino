@@ -12,12 +12,22 @@ class SendCan
   
     SendCan(int mSPI_CS_PIN): CAN(mSPI_CS_PIN)
     {
+    }
 
+    void initCAN()
+    {
+      while(CAN_OK != CAN.begin(CAN_500KBPS))
+      {
+      Serial.println("CAN BUS Shield init failed");
+      Serial.println("Init CAN BUS Shield again");
+      delay(100);
+      }
+      Serial.println("CAN BUS Shield init ok");
     }
 
     void sendMsg(unsigned char msg[8])
     {
-      //mCAN.sendMsgBuf(0, 0, 8, msg);
+      CAN.sendMsgBuf(0, 0x700, 0, 0, 8, msg);
       Serial.println("hej");
     }
 
@@ -34,7 +44,8 @@ class ReceivePotential
     int gasPin = A1;
 
   public:
-    receivePotential()
+
+    ReceivePotential()
     {
       pinMode(brakePin, INPUT);
       pinMode(gasPin, INPUT);
@@ -51,55 +62,150 @@ class ReceivePotential
     }
 };
 
-int CS_PIN = 9;
-ReceivePotential receivePot;
-SendCan canSend(CS_PIN);
-void setup() 
-{
-  Serial.begin(9600);
-  Serial.println("Serial initalized");
-
-  mcp2515_can CAN = canSend.getCan();
-  while(CAN_OK != CAN.begin(CAN_500KBPS))
-    {
-      Serial.println("CAN BUS Shield init failed");
-      Serial.println("Init CAN BUS Shield again");
-      delay(100);
-    }
-    Serial.println("CAN BUS Shield init ok");
-}
-
-
-class Car()
+class Car
 {
   private:    
-    int DRIVE_ARR[] = {0, 128, 132, 68, 0, 0, 0, 0};
-    int REVERSE_ARR[] = {0, 128, 132, 44, 0, 0, 0, 0};
-    int NEUTRAL_ARR[] = {0, 128, 132, 44, 0, 0, 0, 0};
-    int BRAKE_ARR[] = {0, 0, 0, 0, 0, 0, 0, 0};
+    unsigned char DRIVE_ARR[8] = {0, 128, 132, 68, 0, 0, 0, 0};
+    unsigned char REVERSE_ARR[8] = {0, 128, 132, 44, 0, 0, 0, 0};
+    unsigned char NEUTRAL_ARR[8] = {0, 128, 132, 44, 0, 0, 0, 0};
+    unsigned char BRAKE_ARR[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    bool isNeutral = true;
     bool isDriving = false;
-    bool isBraking = false;
     bool isReversing = false;
+    bool isBraking = false;
+
+    int DRIVE_PIN = 3;
+    int REVERSE_PIN = 4;
+    int NEUTRAL_PIN = 5;
+    int BRAKE_PIN = 6;
+
+    SendCan *CANBUS;
 
   public:
 
-    Car()
+    Car(const SendCan &CAN)
     {
-      while(true):
-      if()
+      pinMode(DRIVE_PIN, INPUT_PULLUP);
+      pinMode(REVERSE_PIN, INPUT_PULLUP);
+      pinMode(NEUTRAL_PIN, INPUT_PULLUP);
+      pinMode(BRAKE_PIN, INPUT_PULLUP);
+
+      CANBUS = &CAN;
     }
-    void 
+
+    void readPanel()
+    {
+      if(digitalRead(DRIVE_PIN) == LOW)
+      {
+        isDriving = true;
+
+        isBraking = false;
+        isReversing = false;
+        isNeutral = false;
+        return;
+      }
+      else if(digitalRead(REVERSE_PIN) == LOW)
+      {
+        isReversing = true;
+
+        isDriving = false;
+        isBraking = false;
+        isNeutral = false;
+        return;
+      }
+      else if(digitalRead(NEUTRAL_PIN) == LOW)
+      {
+        isNeutral = true;
+        
+        isBraking = false;
+        isDriving = false;
+        isReversing = false;
+        return;
+      }
+      else if(digitalRead(BRAKE_PIN) == LOW)
+      {
+        isBraking = true;
+        
+        isNeutral = false;
+        isDriving = false;
+        isReversing = false;
+        return;
+      }
+    }
+
+
+    void driveCAR(int driveReversePot, int brakePot)
+    {
+
+        if(isNeutral)
+        {
+          //CANBUS->sendMsg(NEUTRAL_ARR);
+          Serial.println("IS NEUTRAL!!");
+        }
+        else if(isDriving)
+        {
+          float f = static_cast<float>(driveReversePot);
+          char *bytes = reinterpret_cast<char *>(&f);
+          Serial.println("IS DRIVING, POT: " + String(driveReversePot));
+          for(int i = 0; i < 4; i++)
+          {
+            Serial.print(bytes[i], HEX);  //4668
+          }
+          Serial.println("");
+          //Serial.print(*bytes);
+          delay(5000);
+        }
+        else if(isReversing)
+        {
+          Serial.println("IS REVERSING!!");
+          
+        }
+        else if(isBraking)
+        {
+          Serial.println("IS BRAKING!!");
+
+        }
+
+        /*
+        Serial.println("Brake potential: ");
+        Serial.print(brakePot);
+        Serial.println("");
+        Serial.println("Gas potential: ");
+        Serial.println(driveReversePot);
+        delay(500);
+        */
+    }
+
+
+
+/*
+    void potToDriveArr(int drivePot, int &arr[8])
+    {
+      unsigned char *temp[8] = arr;
+    
+    }
+*/
+  
+};
+
+
+
+int CS_PIN = 9;
+SendCan sendCAN(CS_PIN);
+Car car(sendCAN);
+ReceivePotential receivePot;
+void setup() 
+{
+
+  Serial.begin(9600);
+  Serial.println("Serial initalized");
+  sendCAN.initCAN();
 }
-
-
 
 
 void loop()
 {
-  Serial.println("Brake potential: ");
-  Serial.print(receivePot.getBrakePot());
-  Serial.println("");
-  Serial.println("Gas potential: ");
-  Serial.println(receivePot.getGasPot());
-  delay(500);
+  car.readPanel();
+  car.driveCAR(receivePot.getGasPot(), receivePot.getBrakePot());
 }
