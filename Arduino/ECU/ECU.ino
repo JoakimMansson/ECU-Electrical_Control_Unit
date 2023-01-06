@@ -1,6 +1,6 @@
+#include <Arduino.h>
 #include <mcp2515_can.h>
 #include <SPI.h>
-
 
 
 class SendCan
@@ -28,7 +28,7 @@ class SendCan
     void sendMsg(unsigned char msg[8])
     {
       CAN.sendMsgBuf(0, 0x700, 0, 0, 8, msg);
-      Serial.println("hej");
+      Serial.println("Skickar");
     }
 
     mcp2515_can getCan()
@@ -145,14 +145,32 @@ class Car
         }
         else if(isDriving)
         {
-          float f = static_cast<float>(driveReversePot);
-          char *bytes = reinterpret_cast<char *>(&f);
+     
+
           Serial.println("IS DRIVING, POT: " + String(driveReversePot));
+          
+          float f = static_cast<int>(driveReversePot);
+          char *bytes = reinterpret_cast<char *>(&f);
+          
+          String ieee754 = "";
           for(int i = 0; i < 4; i++)
           {
-            Serial.print(bytes[i], HEX);  //4668
+            if(bytes[i] > 256)
+            {
+              String tempByte = String((bytes[i], HEX));
+              ieee754 += tempByte.substring(tempByte.length()-2) + tempByte.substring(tempByte.length()-1);
+            }
+            else
+            {
+              ieee754 += String((bytes[i], HEX));
+            }
+            //DRIVE_ARR[7-i] = (bytes[i],HEX)
+            Serial.println("Hex " + String(i) + ": " + String(bytes[i], HEX));  //4668
           }
-          Serial.println("");
+
+          Serial.println("IEEE754: " + String(ieee754));
+          
+          //Serial.println(hex);
           //Serial.print(*bytes);
           delay(5000);
         }
