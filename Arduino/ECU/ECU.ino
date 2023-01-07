@@ -167,7 +167,7 @@ class Car
             }
             else
             {
-              String byte = ieee754.substring(i+2,2);
+              String byte = ieee754.substring(i*2,i*2+2);
               unsigned char intByte = hexStringToInt(byte.c_str());
               DRIVE_ARR[4+i] = intByte;
               Serial.println("Byte " + String(i) + ": " + intByte);
@@ -175,6 +175,7 @@ class Car
           }
 
 
+          //delay(5000);
           CANBUS->sendMsg(0x501, DRIVE_ARR);
         }
         else if(isReversing)
@@ -224,7 +225,7 @@ class Car
 
     unsigned char hexStringToInt(const char* hexString) 
     {
-      return (char)strtol(hexString, NULL, 16);
+      return (int)strtol(hexString, NULL, 16);
     }
   
 };
