@@ -1,286 +1,277 @@
-#include <Arduino.h>
-#include <mcp2515_can.h>
+// demo: CAN-BUS Shield, send data
+// loovee@seeed.cc
+
+
 #include <SPI.h>
-#include <string.h>
+
+#define CAN_2515
+// #define CAN_2518FD
+
+// Set SPI CS Pin according to your hardware
+
+#if defined(SEEED_WIO_TERMINAL) && defined(CAN_2518FD)
+// For Wio Terminal w/ MCP2518FD RPi Hat：
+// Channel 0 SPI_CS Pin: BCM 8
+// Channel 1 SPI_CS Pin: BCM 7
+// Interupt Pin: BCM25
+const int SPI_CS_PIN = BCM8;
+const int CAN_INT_PIN = BCM25;
+#else
+
+// For Arduino MCP2515 Hat:
+// the cs pin of the version after v1.1 is default to D9
+// v0.9b and v1.0 is default D10
+const int SPI_CS_PIN = 9;
+const int CAN_INT_PIN = 2;
+#endif
 
 
-class SendCan
-{
-  private:
+#ifdef CAN_2518FD
+#include "mcp2518fd_can.h"
+mcp2518fd CAN(SPI_CS_PIN);  // Set CS pin
+#endif
 
-    mcp2515_can CAN;
-  public:
-  
-    SendCan(int mSPI_CS_PIN): CAN(mSPI_CS_PIN)
-    {
-    }
+#ifdef CAN_2515
+#include "mcp2515_can.h"
+mcp2515_can CAN(SPI_CS_PIN);  // Set CS pin
+#endif
 
-    void initCAN()
-    {
-      while(CAN_OK != CAN.begin(CAN_500KBPS))
-      {
-      Serial.println("CAN BUS Shield init failed");
-      Serial.println("Init CAN BUS Shield again");
-      delay(100);
+// 1 for DEBUGGING
+#define DEBUG 1
+
+#if DEBUG == 1
+#define debug(x) Serial.print(x);
+#define debugln(x) Serial.println(x);
+#else
+#define debug(x)
+#define debugln(x)
+#endif
+
+
+unsigned char DRIVE_ARR[8] = { 0, 0, 250, 68, 0, 0, 0, 0 }; // 2000 RPM
+unsigned char REVERSE_ARR[8] = { 0, 0, 250, 196, 0, 0, 0, 0 }; // -2000 RPM
+unsigned char NEUTRAL_ARR[8] = { 0, 0, 250, 68, 0, 0, 0, 0 }; // 2000 RPM
+unsigned char BRAKE_ARR[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+unsigned char BUS_VOLTAGE[8] = { 0, 0, 0, 0, 0, 0, 128, 63};
+
+bool isNeutral = true;
+bool isDriving = false;
+bool isReversing = false;
+bool isBraking = false;
+
+int DRIVE_PIN = 7;
+int REVERSE_PIN = 8;
+int NEUTRAL_PIN = 6;
+int BRAKE_PIN = 5;
+
+int INPUT_BRAKE_PIN = A0;
+int INPUT_GAS_PIN = A1;
+
+
+unsigned char CAN_buf[8]; // Storing of incoming CAN data
+
+
+
+// Initialization of CAN
+void init_CAN() {
+  while (CAN_OK != CAN.begin(CAN_500KBPS)) {  // init can bus : baudrate = 500k
+    Serial.println("CAN init fail, retry...");
+    delay(100);
+  }
+  Serial.println("CAN init ok!");
+}
+
+// ---------------- DRIVING CAR ----------------------------
+
+void sendCAN(int channel, unsigned char msg[8]) {
+  CAN.sendMsgBuf(channel, 0, 8, msg);
+}
+
+
+void readPanel() {
+  if (digitalRead(DRIVE_PIN) == LOW) {
+    isDriving = true;
+
+    isBraking = false;
+    isReversing = false;
+    isNeutral = false;
+    return;
+  } else if (digitalRead(REVERSE_PIN) == LOW) {
+    isReversing = true;
+
+    isDriving = false;
+    isBraking = false;
+    isNeutral = false;
+    return;
+  } else if (digitalRead(NEUTRAL_PIN) == LOW) {
+    isNeutral = true;
+
+    isBraking = false;
+    isDriving = false;
+    isReversing = false;
+    return;
+  } else if (digitalRead(BRAKE_PIN) == LOW) {
+    isBraking = true;
+
+    isNeutral = false;
+    isDriving = false;
+    isReversing = false;
+    return;
+  }
+}
+
+void driveCAR(double driveReversePot, double brakePot) {
+  // Input potential will be between 0 - 1024
+  driveReversePot = driveReversePot / 1024.0;
+  brakePot = brakePot / 1024.0;
+
+  sendCAN(0x502, BUS_VOLTAGE);
+  /* ---------- NEUTRAL ----------- */
+  if (isNeutral) {
+    debugln("IS NEUTRAL!!");
+    sendCAN(0x501, DRIVE_ARR);
+  /* ------------ DRIVING ------------- */
+  } else if (isDriving) {
+    debugln("IS DRIVING, POT: " + String(driveReversePot));
+
+    // Drive potential to IEEE754 string
+    String ieee754 = IEEE754(driveReversePot);
+    //debugln("IEEE754: " + ieee754);
+
+    //Inserting ieee754 values in DRIVE_ARR
+    for (int i = 0; i < 4; i++) {
+      if (i == 0) {
+        String byte = ieee754.substring(0, 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        DRIVE_ARR[4] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
+      } else {
+        String byte = ieee754.substring(i * 2, i * 2 + 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        DRIVE_ARR[4 + i] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
       }
-      Serial.println("CAN BUS Shield init ok");
-      //delay(5000);
-      CAN.enableTxInterrupt(true);
-      //CAN.ini
     }
 
-    void sendCAN(long unsigned int channel, const unsigned char msg[8])
-    {
-      // byte mcp2515_can::sendMsgBuf(byte status, unsigned long id, byte ext, byte rtrBit, byte len, volatile const byte* buf) {
-        /*
-      for(int i = 4; i < 8; i++)
-      {
-        Serial.println("Byte " + String(i-4) + ": " + msg[i]);
+    // Print drive_arr
+    String str_drive = "";
+    for (int i = 0; i < 8; i++) {
+      str_drive += " " + String(DRIVE_ARR[i]);
+    }
+    debugln(str_drive);
+
+    sendCAN(0x501, DRIVE_ARR);
+    /* --------- REVERSING --------- */
+  } else if (isReversing) {
+    debugln("IS REVERSING, POT: " + String(driveReversePot));
+
+    // Drive potential to IEEE754 string
+    String ieee754 = IEEE754(driveReversePot);
+    //debugln("IEEE754: " + ieee754);
+
+    //Inserting ieee754 values in DRIVE_ARR
+    for (int i = 0; i < 4; i++) {
+      if (i == 0) {
+        String byte = ieee754.substring(0, 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        REVERSE_ARR[4] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
+      } else {
+        String byte = ieee754.substring(i * 2, i * 2 + 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        REVERSE_ARR[4 + i] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
       }
-      */
-      CAN.clearBufferTransmitIfFlags();
-      byte status = CAN.sendMsgBuf(channel, 0, 0, 8, msg, false);
-      //delay(5000);
     }
 
-    mcp2515_can getCan()
-    {
-      return CAN;
-    }
-};
+    sendCAN(0x501, REVERSE_ARR);
 
-class ReceivePotential
-{
-  private:
-    int brakePin = A0;
-    int gasPin = A1;
-
-  public:
-
-    ReceivePotential()
-    {
-      pinMode(brakePin, INPUT);
-      pinMode(gasPin, INPUT);
-    }
-
-    double getBrakePot()
-    {
-      return analogRead(brakePin);
-    }
-
-    double getGasPot()
-    {
-      return analogRead(gasPin);
-    }
-};
-
-class Car
-{
-  private:    
-    unsigned char DRIVE_ARR[8];
-    unsigned char REVERSE_ARR[8] = {0, 128, 132, 44, 0, 0, 0, 0};
-    unsigned char NEUTRAL_ARR[ 8] ={0, 128, 132, 44, 0, 0, 0, 0};
-    unsigned char BRAKE_ARR[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    unsigned char BUS_VOLTAGE[8] = {0,0,0,0,0,0,128,63};
-
-    bool isNeutral = true;
-    bool isDriving = false;
-    bool isReversing = false;
-    bool isBraking = false;
-
-    int DRIVE_PIN = 7;
-    int REVERSE_PIN = 8;
-    int NEUTRAL_PIN = 6;
-    int BRAKE_PIN = 5;
-
-    int INPUT_BRAKE_PIN = A0;
-    int INPUT_GAS_PIN = A1;
-
-    SendCan *CANBUS;
-
-  public:
-
-    Car(const SendCan CAN)
-    {
-      // Setting controls pins to input
-      pinMode(DRIVE_PIN, INPUT_PULLUP);
-      pinMode(REVERSE_PIN, INPUT_PULLUP);
-      pinMode(NEUTRAL_PIN, INPUT_PULLUP);
-      pinMode(BRAKE_PIN, INPUT_PULLUP);
-
-      pinMode(INPUT_BRAKE_PIN, INPUT);
-      pinMode(INPUT_GAS_PIN, INPUT);
-      
-      CANBUS = &CAN;
-    }
-
-    int readGas()
-    {
-      return analogRead(INPUT_GAS_PIN);
-    }
-
-    int readBrake()
-    {
-      return analogRead(INPUT_BRAKE_PIN);
-    }
+  /* ------------ BRAKING ------------- */
+  } else if (isBraking) {
     
-    void readPanel()
-    {
-      if(digitalRead(DRIVE_PIN) == LOW)
-      {
-        isDriving = true;
+    debugln("IS BRAKING, POT: " + String(brakePot));
+  }
+}
 
-        isBraking = false;
-        isReversing = false;
-        isNeutral = false;
-        return;
-      }
-      else if(digitalRead(REVERSE_PIN) == LOW)
-      {
-        isReversing = true;
 
-        isDriving = false;
-        isBraking = false;
-        isNeutral = false;
-        return;
-      }
-      else if(digitalRead(NEUTRAL_PIN) == LOW)
-      {
-        isNeutral = true;
-        
-        isBraking = false;
-        isDriving = false;
-        isReversing = false;
-        return;
-      }
-      else if(digitalRead(BRAKE_PIN) == LOW)
-      {
-        isBraking = true;
-        
-        isNeutral = false;
-        isDriving = false;
-        isReversing = false;
-        return;
-      }
+/* ---------------------- IEEE754 ----------------------------------------*/
+String IEEE754(const double potential) {
+  double f = static_cast<double>(potential);
+  char *bytes = reinterpret_cast<char *>(&f);
+
+  String ieee754 = "";
+  for (int i = 0; i < 4; i++) {
+    String tempByte = String(bytes[i], HEX);
+    //debugln("Byte " + String(i) + ": " + tempByte);
+
+    
+    if (tempByte.length() > 2) { //Edgecase for when tempByte is ex: ffffc0 and we only need c0
+      //debugln("Byte.length>2: " + tempByte);
+      ieee754 += tempByte.substring(tempByte.length() - 2, tempByte.length() - 1) + tempByte.substring(tempByte.length() - 1, tempByte.length());
+    } else {
+      ieee754 += String(bytes[i], HEX);
+      // debugln("Hex " + String(i) + ": " + String(bytes[i], HEX));  //4668
     }
+  }
 
 
-    void driveCAR(double driveReversePot, double brakePot)
-    {
-        driveReversePot = driveReversePot/1024.0;
-        brakePot = brakePot/1024.0;
+  int remainingZeros = 8 - ieee754.length(); // For when IEEE754.length() < 8
+  for (int i = 0; i < remainingZeros; i++) {
+    ieee754 = "0" + ieee754;
+  }
 
-        CANBUS->sendCAN(0x502, BUS_VOLTAGE);
-        if(isNeutral)
-        {
-          Serial.println("IS NEUTRAL!!");
-          CANBUS->sendCAN(0x501, NEUTRAL_ARR);
-        }
-        else if(isDriving)
-        {
-          Serial.println("IS DRIVING, POT: " + String(driveReversePot));
-          
-          // Drive potential to IEEE754 string
-          String ieee754 = IEEE754(driveReversePot);
-          Serial.println("IEEE754: " + ieee754);
-          delay(3000);
+  return ieee754;
+}
 
-          //Inserting ieee754 values in DRIVE_ARR
-          for(int i = 0; i < 4; i++)
-          {
-            if(i == 0)
-            {
-              String byte = ieee754.substring(0,2);
-              unsigned char unsignedByte = hexStringToInt(byte.c_str());
-              DRIVE_ARR[4] = unsignedByte;
-              //Serial.println("Byte " + String(i) + ": " + String(unsignedByte));              
-            }
-            else
-            {
-              String byte = ieee754.substring(i*2,i*2+2);
-              unsigned char unsignedByte = hexStringToInt(byte.c_str());
-              DRIVE_ARR[4+i] = unsignedByte;
-              //Serial.println("Byte " + String(i) + ": " + String(unsignedByte));
-            }
-          }
-
-          /*
-          for(int i = 0; i < 4; i++)
-          {
-            Serial.println("Byte " + String(i) + ": " + DRIVE_ARR[i]);
-          }
-          */
-
-          //delay(5000);
-          CANBUS->sendCAN(0x500, DRIVE_ARR);
-        }
-        else if(isReversing)
-        {
-          Serial.println("IS REVERSING, POT: " + String(driveReversePot));
-        }
-        else if(isBraking)
-        {
-          Serial.println("IS BRAKING, POT: " + String(brakePot));
-        }
-    }
-
-    String IEEE754(const double potential)
-    {
-      double f = static_cast<double>(potential);
-      char *bytes = reinterpret_cast<char *>(&f);
-          
-      String ieee754 = "";
-      for(int i = 0; i < 4; i++)
-        {
-          String tempByte = String(bytes[i],HEX);
-          //Serial.println("Byte " + String(i) + ": " + tempByte);
-
-          //Edgecase for when tempByte is ex: ffffc0 and we only need c0
-          if(tempByte.length() > 2)
-          {
-            //Serial.println("Byte.length>2: " + tempByte);
-            ieee754 += tempByte.substring(tempByte.length()-2, tempByte.length()-1) + tempByte.substring(tempByte.length()-1, tempByte.length());
-          }
-          else
-          {
-            ieee754 += String(bytes[i], HEX);
-           // Serial.println("Hex " + String(i) + ": " + String(bytes[i], HEX));  //4668
-          }
-        }
-
-      // For when IEEE754.length() < 8
-      int remainingZeros = 8 - ieee754.length();
-      for(int i = 0; i < remainingZeros; i++)
-      {
-        ieee754 = "0" + ieee754;
-      }
-
-      return ieee754;
-    }
-
-    double hexStringToInt(const char* hexString) 
-    {
-      return (double)strtol(hexString, NULL, 16);
-    }
-  
-};
+double hexStringToInt(const char *hexString) {
+  return (double)strtol(hexString, NULL, 16);
+}
 
 
-int CS_PIN = 9;
-SendCan sendCAN(CS_PIN);
-Car car(sendCAN);
-void setup() 
-{
+void setup() {
   Serial.begin(9600);
-  Serial.println("Serial initalized");
-  sendCAN.initCAN();
+  while (!Serial) {};
+
+  init_CAN();
+
+  // Setting controls pins to input
+  pinMode(DRIVE_PIN, INPUT_PULLUP);
+  pinMode(REVERSE_PIN, INPUT_PULLUP);
+  pinMode(NEUTRAL_PIN, INPUT_PULLUP);
+  pinMode(BRAKE_PIN, INPUT_PULLUP);
+
+  pinMode(INPUT_BRAKE_PIN, INPUT);
+  pinMode(INPUT_GAS_PIN, INPUT);
 }
 
 
-void loop()
-{
-  int gas_pot = car.readGas();
-  int brake_pot = car.readBrake();
-  car.readPanel();
-  car.driveCAR(gas_pot, brake_pot);
+void loop() {
+  // Reads and updates isDriving, isReversing & isBraking
+  readPanel();
+
+  int gas_N_reverse_pot = analogRead(INPUT_GAS_PIN);
+  int brake_pot = analogRead(INPUT_BRAKE_PIN);
+
+  // Sends drive commands
+  driveCAR(gas_N_reverse_pot, brake_pot);
+
+  unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
+  if(CAN_available){
+    
+    unsigned int start_time = millis();
+    while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 0.1) {
+        // read data,  len: data length, buf: data buf
+        unsigned char len = 0;
+        CAN.readMsgBuf(&len, CAN_buf);
+        uint32_t CAN_ID = CAN.getCanId();
+        SERIAL_PORT_MONITOR.print("ID: "); SERIAL_PORT_MONITOR.print(String(CAN_ID) + "\t");
+        // print the data
+        for (int i = 0; i < len; i++) {
+                
+            SERIAL_PORT_MONITOR.print(CAN_buf[i]); SERIAL_PORT_MONITOR.print("\t");
+        }
+        SERIAL_PORT_MONITOR.println();
+    }    
+  }
 }
+
