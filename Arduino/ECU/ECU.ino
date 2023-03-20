@@ -83,7 +83,8 @@ void init_CAN() {
 
 // ---------------- DRIVING CAR ----------------------------
 
-void sendCAN(int channel, unsigned char msg[8]) {
+void sendCAN(int channel, unsigned char msg[8]) 
+{
   CAN.sendMsgBuf(channel, 0, 8, msg);
 }
 
@@ -120,6 +121,44 @@ void readPanel() {
   }
 }
 
+
+void resetArrays()
+{
+  for(int i = 4; i < 8; i++)
+  {
+    BRAKE_ARR[i] = 0;
+    DRIVE_ARR[i] = 0;
+    REVERSE_ARR[i] = 0;
+  }
+}
+
+void IEEE754ToArray(unsigned char (&brake_drive_reverse)[8], String ieee754)
+{
+  for (int i = 0; i < 4; i++) {
+      if (i == 0) {
+        String byte = ieee754.substring(0, 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        brake_drive_reverse[4] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
+      } else {
+        String byte = ieee754.substring(i * 2, i * 2 + 2);
+        unsigned char unsignedByte = hexStringToInt(byte.c_str());
+        brake_drive_reverse[4 + i] = unsignedByte;
+        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
+      }
+    }
+}
+
+void brake(double brakePot)
+{
+  String ieee754 = IEEE754(brakePot);
+  IEEE754ToArray(BRAKE_ARR, ieee754);
+  Serial.print("BRAKE: ");
+  Serial.println(brakePot);
+
+  //sendCAN(0x501, BRAKE_ARR);
+}
+
 void driveCAR(double driveReversePot, double brakePot) {
   // Input potential will be between 0 - 1024
   driveReversePot = driveReversePot / 1024.0;
@@ -128,68 +167,36 @@ void driveCAR(double driveReversePot, double brakePot) {
   sendCAN(0x502, BUS_VOLTAGE);
   /* ---------- NEUTRAL ----------- */
   if (isNeutral) {
-    debugln("IS NEUTRAL!!");
+    //debugln("IS NEUTRAL!!");
     sendCAN(0x501, DRIVE_ARR);
   /* ------------ DRIVING ------------- */
   } else if (isDriving) {
     debugln("IS DRIVING, POT: " + String(driveReversePot));
 
-    // Drive potential to IEEE754 string
+    // Drive potential to IEEE754 string (float point)
     String ieee754 = IEEE754(driveReversePot);
-    //debugln("IEEE754: " + ieee754);
 
     //Inserting ieee754 values in DRIVE_ARR
-    for (int i = 0; i < 4; i++) {
-      if (i == 0) {
-        String byte = ieee754.substring(0, 2);
-        unsigned char unsignedByte = hexStringToInt(byte.c_str());
-        DRIVE_ARR[4] = unsignedByte;
-        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
-      } else {
-        String byte = ieee754.substring(i * 2, i * 2 + 2);
-        unsigned char unsignedByte = hexStringToInt(byte.c_str());
-        DRIVE_ARR[4 + i] = unsignedByte;
-        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
-      }
-    }
+    IEEE754ToArray(DRIVE_ARR, ieee754);
 
-    // Print drive_arr
-    String str_drive = "";
-    for (int i = 0; i < 8; i++) {
-      str_drive += " " + String(DRIVE_ARR[i]);
-    }
-    debugln(str_drive);
-
-    sendCAN(0x501, DRIVE_ARR);
+    // Apply brake if driving = 0
+    if(driveReversePot == 0 && brakePot > 0) brake(brakePot);
+    else sendCAN(0x501, DRIVE_ARR);
+    resetArrays();
     /* --------- REVERSING --------- */
   } else if (isReversing) {
     debugln("IS REVERSING, POT: " + String(driveReversePot));
 
-    // Drive potential to IEEE754 string
+    // Drive potential to IEEE754 string (float point)
     String ieee754 = IEEE754(driveReversePot);
-    //debugln("IEEE754: " + ieee754);
 
     //Inserting ieee754 values in DRIVE_ARR
-    for (int i = 0; i < 4; i++) {
-      if (i == 0) {
-        String byte = ieee754.substring(0, 2);
-        unsigned char unsignedByte = hexStringToInt(byte.c_str());
-        REVERSE_ARR[4] = unsignedByte;
-        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
-      } else {
-        String byte = ieee754.substring(i * 2, i * 2 + 2);
-        unsigned char unsignedByte = hexStringToInt(byte.c_str());
-        REVERSE_ARR[4 + i] = unsignedByte;
-        //debugln("Byte " + String(i) + ": " + String(unsignedByte));
-      }
-    }
+    IEEE754ToArray(REVERSE_ARR, ieee754);
 
-    sendCAN(0x501, REVERSE_ARR);
-
-  /* ------------ BRAKING ------------- */
-  } else if (isBraking) {
-    
-    debugln("IS BRAKING, POT: " + String(brakePot));
+    // Apply brake if reversing = 0 else drive
+    if(driveReversePot == 0 && brakePot > 0) brake(brakePot);
+    else sendCAN(0x501, REVERSE_ARR);
+    resetArrays();
   }
 }
 
@@ -229,7 +236,7 @@ double hexStringToInt(const char *hexString) {
 
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(19200);
   while (!Serial) {};
 
   init_CAN();
@@ -242,6 +249,8 @@ void setup() {
 
   pinMode(INPUT_BRAKE_PIN, INPUT);
   pinMode(INPUT_GAS_PIN, INPUT);
+
+
 }
 
 
@@ -264,13 +273,25 @@ void loop() {
         unsigned char len = 0;
         CAN.readMsgBuf(&len, CAN_buf);
         uint32_t CAN_ID = CAN.getCanId();
-        SERIAL_PORT_MONITOR.print("ID: "); SERIAL_PORT_MONITOR.print(String(CAN_ID) + "\t");
+        String CAN_data = "ID:" + String(CAN_ID);
         // print the data
-        for (int i = 0; i < len; i++) {
-                
-            SERIAL_PORT_MONITOR.print(CAN_buf[i]); SERIAL_PORT_MONITOR.print("\t");
+        for (int i = 0; i < len; i++) 
+        {
+           CAN_data += "," + String(CAN_buf[i]);
+           //debug(CAN_buf[i]); debug("\t");
         }
-        SERIAL_PORT_MONITOR.println();
+        
+        uint32_t* data;
+        strcpy(data, CAN_data.c_str());
+        for(int i = 0; i < CAN_data.length(); i++)
+        {
+          debug(data[i]); 
+          debug(" ");
+        }
+        debugln();
+        //Serial.write(data_arr, CAN_data.length());
+        debugln(CAN_data);
+        delay(5000);
     }    
   }
 }
