@@ -1,8 +1,5 @@
-// demo: CAN-BUS Shield, send data
-// loovee@seeed.cc
-
-
 #include <SPI.h>
+#include <Wire.h>
 
 #define CAN_2515
 // #define CAN_2518FD
@@ -179,7 +176,7 @@ void driveCAR(double driveReversePot, double brakePot) {
     //Inserting ieee754 values in DRIVE_ARR
     IEEE754ToArray(DRIVE_ARR, ieee754);
 
-    // Apply brake if driving = 0
+    // Apply brake if driving = 0 & brake > 0
     if(driveReversePot == 0 && brakePot > 0) brake(brakePot);
     else sendCAN(0x501, DRIVE_ARR);
     resetArrays();
@@ -249,8 +246,8 @@ void setup() {
 
   pinMode(INPUT_BRAKE_PIN, INPUT);
   pinMode(INPUT_GAS_PIN, INPUT);
-
-
+  
+  
 }
 
 
@@ -262,7 +259,7 @@ void loop() {
   int brake_pot = analogRead(INPUT_BRAKE_PIN);
 
   // Sends drive commands
-  driveCAR(gas_N_reverse_pot, brake_pot);
+  //driveCAR(gas_N_reverse_pot, brake_pot);
 
   unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
   if(CAN_available){
@@ -273,25 +270,24 @@ void loop() {
         unsigned char len = 0;
         CAN.readMsgBuf(&len, CAN_buf);
         uint32_t CAN_ID = CAN.getCanId();
-        String CAN_data = "ID:" + String(CAN_ID);
+        String CAN_data = String(CAN_ID);
         // print the data
         for (int i = 0; i < len; i++) 
         {
            CAN_data += "," + String(CAN_buf[i]);
            //debug(CAN_buf[i]); debug("\t");
         }
+      
+        // Sending CAN_data over I2C
+        Wire.begin();
+        Wire.beginTransmission(8);
+        Wire.write(CAN_data.c_str());
+        Wire.endTransmission();
+        Wire.end();
+  
         
-        uint32_t* data;
-        strcpy(data, CAN_data.c_str());
-        for(int i = 0; i < CAN_data.length(); i++)
-        {
-          debug(data[i]); 
-          debug(" ");
-        }
-        debugln();
-        //Serial.write(data_arr, CAN_data.length());
-        debugln(CAN_data);
-        delay(5000);
+        Serial.println(CAN_data);
+        //debugln(CAN_data);
     }    
   }
 }
