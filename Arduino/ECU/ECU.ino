@@ -67,8 +67,6 @@ int INPUT_GAS_PIN = A1;
 
 unsigned char CAN_buf[8]; // Storing of incoming CAN data
 
-
-
 // Initialization of CAN
 void init_CAN() {
   while (CAN_OK != CAN.begin(CAN_500KBPS)) {  // init can bus : baudrate = 500k
@@ -118,7 +116,6 @@ void readPanel() {
   }
 }
 
-
 void resetArrays()
 {
   for(int i = 4; i < 8; i++)
@@ -152,7 +149,6 @@ void brake(double brakePot)
   IEEE754ToArray(BRAKE_ARR, ieee754);
   Serial.print("BRAKE: ");
   Serial.println(brakePot);
-
   //sendCAN(0x501, BRAKE_ARR);
 }
 
@@ -218,7 +214,6 @@ String IEEE754(const double potential) {
     }
   }
 
-
   int remainingZeros = 8 - ieee754.length(); // For when IEEE754.length() < 8
   for (int i = 0; i < remainingZeros; i++) {
     ieee754 = "0" + ieee754;
@@ -235,6 +230,8 @@ double hexStringToInt(const char *hexString) {
 void setup() {
   Serial.begin(19200);
   while (!Serial) {};
+  SPI.begin();
+  pinMode(SPI_CS_PIN, OUTPUT);
 
   init_CAN();
 
@@ -247,11 +244,11 @@ void setup() {
   pinMode(INPUT_BRAKE_PIN, INPUT);
   pinMode(INPUT_GAS_PIN, INPUT);
   
-  
+  Wire.begin(8);
 }
 
-
 void loop() {
+
   // Reads and updates isDriving, isReversing & isBraking
   readPanel();
 
@@ -262,33 +259,32 @@ void loop() {
   //driveCAR(gas_N_reverse_pot, brake_pot);
 
   unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
-  if(CAN_available){
-    
-    unsigned int start_time = millis();
+  if(CAN_available > 0){
+
+    unsigned long start_time = millis();
     while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 0.1) {
+        
         // read data,  len: data length, buf: data buf
         unsigned char len = 0;
+        
         CAN.readMsgBuf(&len, CAN_buf);
+
         uint32_t CAN_ID = CAN.getCanId();
         String CAN_data = String(CAN_ID);
         // print the data
         for (int i = 0; i < len; i++) 
         {
-           CAN_data += "," + String(CAN_buf[i]);
+           CAN_data += " " + String(CAN_buf[i]);
            //debug(CAN_buf[i]); debug("\t");
         }
-      
-        // Sending CAN_data over I2C
-        Wire.begin();
+        CAN_data += " ";
+        Serial.println(CAN_data);
+        //Sending CAN_data over I2C
         Wire.beginTransmission(8);
         Wire.write(CAN_data.c_str());
-        Wire.endTransmission();
-        Wire.end();
-  
-        
-        Serial.println(CAN_data);
-        //debugln(CAN_data);
-    }    
+        Wire.endTransmission();   
+    }
   }
+
 }
 
