@@ -56,13 +56,21 @@ bool isDriving = false;
 bool isReversing = false;
 bool isBraking = false;
 
+// Input for drive, reverse & neutral
 int DRIVE_PIN = 7;
 int REVERSE_PIN = 8;
 int NEUTRAL_PIN = 6;
-int BRAKE_PIN = 5;
 
 int INPUT_BRAKE_PIN = A0;
 int INPUT_GAS_PIN = A1;
+
+// Input for driving modes ECO/RACING
+int INPUT_DRIVING_MODES = 3;
+
+// Input for cruise control and buttons to decrease and increase cruise speed
+int INPUT_CRUISE_CONTROL_PIN = 2;
+int INPUT_CRUISE_CONTROL_INCREASE = 1;
+int INPUT_CRUISE_CONTROL_DECREASE = 0;
 
 
 unsigned char CAN_buf[8]; // Storing of incoming CAN data
@@ -256,7 +264,7 @@ void loop() {
   int brake_pot = analogRead(INPUT_BRAKE_PIN);
 
   // Sends drive commands
-  //driveCAR(gas_N_reverse_pot, brake_pot);
+  driveCAR(gas_N_reverse_pot, brake_pot);
 
   unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
   if(CAN_available > 0){
@@ -278,7 +286,7 @@ void loop() {
            //debug(CAN_buf[i]); debug("\t");
         }
         CAN_data += " ";
-        Serial.println(CAN_data);
+        //Serial.println(CAN_data);
         //Sending CAN_data over I2C
         Wire.beginTransmission(8);
         Wire.write(CAN_data.c_str());
