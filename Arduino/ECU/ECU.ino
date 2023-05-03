@@ -1,5 +1,6 @@
 #include <SPI.h>
 #include <Wire.h>
+#include <PID_v1.h>
 
 #define CAN_2515
 // #define CAN_2518FD
@@ -64,16 +65,98 @@ int NEUTRAL_PIN = 6;
 int INPUT_BRAKE_PIN = A0;
 int INPUT_GAS_PIN = A1;
 
+
 // Input for driving modes ECO/RACING
-int INPUT_DRIVING_MODES = 3;
+bool inECO = true;
+int INPUT_DRIVING_MODES_PIN = 3;
+
 
 // Input for cruise control and buttons to decrease and increase cruise speed
+bool inCruiseControl = false;
+
+float potentialCruiseControl = 0.0; // Set at the initiation of cruise
+float velocityCruiseControl = 0.0; // Set at the initiation of cruise
+
+float cruiseBrakeApplied = 0.0; // Used for incrementing brake if speed does not decrease
+float cruiseGasApplied = 0.0; // Used for incrementing gas if speed does not increase
+
 int INPUT_CRUISE_CONTROL_PIN = 2;
-int INPUT_CRUISE_CONTROL_INCREASE = 1;
-int INPUT_CRUISE_CONTROL_DECREASE = 0;
+int INPUT_CRUISE_CONTROL_INCREASE_PIN = 1;
+int INPUT_CRUISE_CONTROL_DECREASE_PIN = 0;
+
+
+// Velocity of vehicle
+double vehicleVelocity = 0.0;
+// Previous iteration of vehicle velocity
+double lastVehicleVelocity = 0.0;
 
 
 unsigned char CAN_buf[8]; // Storing of incoming CAN data
+
+
+/// Function to extract a specified number of bytes from a string and convert to decimal number
+double extractBytesToDecimal(String data, int startByte, int numBytes) {
+  // Extract the specified number of bytes from the string
+  String byteStr = data.substring(startByte, startByte + numBytes);
+
+
+  // Calculate startbyte index position ex. startByte: 4 = index: 14 (65 160 0 0 68 (250 0 0 1027))
+  int startIndex = 0;
+  int byteCounter = 0; // Bytes inc. for each " "
+  for(int i = 0; i < data.length(); i++)
+  {
+
+    if(byteCounter == startByte)
+    {
+      startIndex = i;
+      break;
+    }
+
+    if(data.substring(i, i+1) == " ")
+    {
+      byteCounter++;
+    }
+  
+  }
+
+  debugln("Start index: " + String(startIndex));
+
+
+  
+  byte bytes[numBytes];
+
+  byteCounter = 0;
+  String byte_data = "";
+  for(int i = startIndex; i < data.length(); i++)
+  {
+
+    String data_substr = data.substring(i, i+1);
+
+    if(byteCounter == numBytes)
+    {
+      break;
+    }
+    else if(data_substr == " ")
+    {
+      debugln(byte_data);
+      bytes[byteCounter] = (byte) strtoul(byte_data.c_str(), NULL, 10);
+      byteCounter++;
+      byte_data = "";
+    }
+    else
+    {
+      byte_data += data_substr; 
+    }
+
+  }
+
+
+  float value;
+  memcpy(&value, bytes, numBytes);
+  // Return the decimal value
+  return value;
+}
+
 
 // Initialization of CAN
 void init_CAN() {
@@ -114,14 +197,8 @@ void readPanel() {
     isDriving = false;
     isReversing = false;
     return;
-  } else if (digitalRead(BRAKE_PIN) == LOW) {
-    isBraking = true;
-
-    isNeutral = false;
-    isDriving = false;
-    isReversing = false;
-    return;
   }
+
 }
 
 void resetArrays()
@@ -153,8 +230,11 @@ void IEEE754ToArray(unsigned char (&brake_drive_reverse)[8], String ieee754)
 
 void brake(double brakePot)
 {
+  inCruiseControl = false; // EXIT CRUISE CONTROL
+
   String ieee754 = IEEE754(brakePot);
   IEEE754ToArray(BRAKE_ARR, ieee754);
+  
   Serial.print("BRAKE: ");
   Serial.println(brakePot);
   //sendCAN(0x501, BRAKE_ARR);
@@ -243,29 +323,29 @@ void setup() {
 
   init_CAN();
 
-  // Setting controls pins to input
+  // Pins for DRIVE, REVERSE & NEUTRAL
   pinMode(DRIVE_PIN, INPUT_PULLUP);
   pinMode(REVERSE_PIN, INPUT_PULLUP);
   pinMode(NEUTRAL_PIN, INPUT_PULLUP);
-  pinMode(BRAKE_PIN, INPUT_PULLUP);
 
+  // Pins for potential input GAS & BRAKE
   pinMode(INPUT_BRAKE_PIN, INPUT);
   pinMode(INPUT_GAS_PIN, INPUT);
-  
-  Wire.begin(8);
+
+  // Pins for CRUISE CONTROL
+  pinMode(INPUT_CRUISE_CONTROL_PIN, INPUT);
+  pinMode(INPUT_CRUISE_CONTROL_INCREASE_PIN, INPUT);
+  pinMode(INPUT_CRUISE_CONTROL_DECREASE_PIN, INPUT);
+
+  // Pins for ECO & RACING mode
+  pinMode(INPUT_DRIVING_MODES_PIN, INPUT);
+
+  Wire.begin(8); // For I2C communication to LoRa
 }
 
 void loop() {
 
-  // Reads and updates isDriving, isReversing & isBraking
-  readPanel();
-
-  int gas_N_reverse_pot = analogRead(INPUT_GAS_PIN);
-  int brake_pot = analogRead(INPUT_BRAKE_PIN);
-
-  // Sends drive commands
-  driveCAR(gas_N_reverse_pot, brake_pot);
-
+  
   unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
   if(CAN_available > 0){
 
@@ -277,21 +357,99 @@ void loop() {
         
         CAN.readMsgBuf(&len, CAN_buf);
 
-        uint32_t CAN_ID = CAN.getCanId();
-        String CAN_data = String(CAN_ID);
+        String CAN_ID = String(CAN.getCanId());
+        String CAN_data = "";
         // print the data
         for (int i = 0; i < len; i++) 
         {
-           CAN_data += " " + String(CAN_buf[i]);
-           //debug(CAN_buf[i]); debug("\t");
+           CAN_data += String(CAN_buf[i]) + ' ';
+           debug(CAN_buf[i]); debug("\t");
         }
-        CAN_data += " ";
         //Serial.println(CAN_data);
+
+        String full_CAN_data = CAN_ID + ' ' + CAN_data;
+        debugln("Full CAN data: " + full_CAN_data);
+        
         //Sending CAN_data over I2C
         Wire.beginTransmission(8);
-        Wire.write(CAN_data.c_str());
+        Wire.write(full_CAN_data.c_str());
         Wire.endTransmission();   
+
+        // Extract vehicle velocity speed
+        if(CAN_ID == "1027")
+        {
+          vehicleVelocity = extractBytesToDecimal(CAN_data, 4, 4);
+          debugln("Vehicle velocity: " + String(vehicleVelocity));
+        }
     }
+  }
+
+  // Reads and updates isDriving, isReversing & isBraking
+  readPanel();
+
+  // Get driving potentials
+  int gas_N_reverse_potential = analogRead(INPUT_GAS_PIN);
+  int brake_potential = analogRead(INPUT_BRAKE_PIN);
+  
+  if(inCruiseControl && isDriving)
+  {
+    int velocityOffset = 3; // Ex if set cruise is 80, 77 -> 83 is OK
+    float brakeIncrease = 0.01; // Adjust if braking should be faster
+    float gasIncrease = 0.01; // Adjust if gas should be faster
+
+    if(vehicleVelocity > velocityCruiseControl + velocityOffset) // If speed is above threshold
+    {
+      gas_N_reverse_potential = 0;
+      cruiseGasApplied
+
+      if(lastVehicleVelocity + 0.5 < vehicleVelocity) // If brake is affecting speed dont increase brake
+      {
+        brake_potential = cruiseBrakeApplied;
+      }
+      else // If brake is NOT affecting speed increase brake
+      {
+        cruiseBrakeApplied += brakeIncrease;
+        brake_potential = cruiseBrakeApplied;
+      }
+    }
+
+    else if(vehicleVelocity < velocityCruiseControl - velocityOffset) // If speed is below threshold
+    {
+      if(lastVehicleVelocity > vehicleVelocity + 0.5) // If gas is affecting speed dont increase gas
+      {
+        gas_N_reverse_potential = cruiseGasApplied;
+      }
+      else // If gas is NOT affecting speed increase gas
+      {
+        cruiseGasApplied += gasIncrease;
+        gas_N_reverse_potential += cruiseGasApplied;
+      }
+    }
+    else
+    {
+      
+      
+    }
+  }
+  lastVehicleVelocity = vehicleVelocity; // Set last vehicle velocity to current velocity
+
+
+  // Sends drive commands
+  driveCAR(gas_N_reverse_potential, brake_potential);
+
+
+  // Check for input of CRUISE CONTROL
+  if(digitalRead(INPUT_CRUISE_CONTROL_PIN) == HIGH && inCruiseControl == false && isDriving)
+  {
+    velocityCruiseControl = vehicleVelocity;
+    potentialCruiseControl = gas_N_reverse_potential
+    inCruiseControl = true;
+  }
+
+  // Check for input of ECO mode
+  if(digitalRead(INPUT_DRIVING_MODES_PIN) == HIGH)
+  {
+    inECO = !inECO;
   }
 
 }
