@@ -1,6 +1,6 @@
 #include <SPI.h>
 #include <Wire.h>
-#include <PID_v1.h>
+//#include <PID_v1.h>
 
 #define CAN_2515
 // #define CAN_2518FD
@@ -45,7 +45,6 @@ mcp2515_can CAN(SPI_CS_PIN);  // Set CS pin
 #define debugln(x)
 #endif
 
-
 unsigned char DRIVE_ARR[8] = { 0, 0, 250, 68, 0, 0, 0, 0 }; // 2000 RPM
 unsigned char REVERSE_ARR[8] = { 0, 0, 250, 196, 0, 0, 0, 0 }; // -2000 RPM
 unsigned char NEUTRAL_ARR[8] = { 0, 0, 250, 68, 0, 0, 0, 0 }; // 2000 RPM
@@ -58,47 +57,47 @@ bool isReversing = false;
 bool isBraking = false;
 
 // Input for drive, reverse & neutral
-int DRIVE_PIN = 7;
-int REVERSE_PIN = 8;
-int NEUTRAL_PIN = 6;
+const int DRIVE_PIN = 7;
+const int REVERSE_PIN = 8;
+const int NEUTRAL_PIN = 6;
 
-int INPUT_BRAKE_PIN = A0;
-int INPUT_GAS_PIN = A1;
+// Read gas and brake raw potentials
+const int INPUT_BRAKE_PIN = A0; 
+const int INPUT_GAS_PIN = A1;
+float max_gas_potential = 0;
+float min_gas_potential = 99999;
+float max_brake_potential = 0;
+float min_brake_potential = 99999;
+float last_brake_potential = 1/1337; 
+float last_gas_N_reverse_potential = 1/1337;
 
 
 // Input for driving modes ECO/RACING
 bool inECO = true;
-int INPUT_DRIVING_MODES_PIN = 3;
-
+bool ecoButtonPressed = false;
+const int INPUT_DRIVING_MODES_PIN = 3;
 
 // Input for cruise control and buttons to decrease and increase cruise speed
 bool inCruiseControl = false;
-
 float potentialCruiseControl = 0.0; // Set at the initiation of cruise
 float velocityCruiseControl = 0.0; // Set at the initiation of cruise
-
 float cruiseBrakeApplied = 0.0; // Used for incrementing brake if speed does not decrease
 float cruiseGasApplied = 0.0; // Used for incrementing gas if speed does not increase
+const int INPUT_CRUISE_CONTROL_PIN = 5; // PIN ACTIVATE/DEACTIVATE CRUISE
+const int INPUT_CRUISE_CONTROL_INCREASE_PIN = 10; // PIN INCREASE CRUISE SPEED
+const int INPUT_CRUISE_CONTROL_DECREASE_PIN = 0; // PUB DECREASE CRUISE SPEED
 
-int INPUT_CRUISE_CONTROL_PIN = 2;
-int INPUT_CRUISE_CONTROL_INCREASE_PIN = 1;
-int INPUT_CRUISE_CONTROL_DECREASE_PIN = 0;
-
-
-// Velocity of vehicle
-double vehicleVelocity = 0.0;
-// Previous iteration of vehicle velocity
-double lastVehicleVelocity = 0.0;
-
+double vehicleVelocity = 0.0; // Velocity of vehicle
+double lastVehicleVelocity = 0.0; // Previous iteration of vehicle velocity
 
 unsigned char CAN_buf[8]; // Storing of incoming CAN data
 
 
-/// Function to extract a specified number of bytes from a string and convert to decimal number
+// extractBytesToDecimal() extracts a specified number of bytes (int numBytes) 
+// from a IEEE754 string (String data) and return normal decimal number
 double extractBytesToDecimal(String data, int startByte, int numBytes) {
   // Extract the specified number of bytes from the string
   String byteStr = data.substring(startByte, startByte + numBytes);
-
 
   // Calculate startbyte index position ex. startByte: 4 = index: 14 (65 160 0 0 68 (250 0 0 1027))
   int startIndex = 0;
@@ -118,13 +117,9 @@ double extractBytesToDecimal(String data, int startByte, int numBytes) {
     }
   
   }
+  //debugln("Start index: " + String(startIndex));
 
-  debugln("Start index: " + String(startIndex));
-
-
-  
   byte bytes[numBytes];
-
   byteCounter = 0;
   String byte_data = "";
   for(int i = startIndex; i < data.length(); i++)
@@ -138,7 +133,7 @@ double extractBytesToDecimal(String data, int startByte, int numBytes) {
     }
     else if(data_substr == " ")
     {
-      debugln(byte_data);
+      //debugln(byte_data);
       bytes[byteCounter] = (byte) strtoul(byte_data.c_str(), NULL, 10);
       byteCounter++;
       byte_data = "";
@@ -150,7 +145,6 @@ double extractBytesToDecimal(String data, int startByte, int numBytes) {
 
   }
 
-
   float value;
   memcpy(&value, bytes, numBytes);
   // Return the decimal value
@@ -158,7 +152,7 @@ double extractBytesToDecimal(String data, int startByte, int numBytes) {
 }
 
 
-// Initialization of CAN
+// Initialization of CAN shield to 500KBPS
 void init_CAN() {
   while (CAN_OK != CAN.begin(CAN_500KBPS)) {  // init can bus : baudrate = 500k
     Serial.println("CAN init fail, retry...");
@@ -169,12 +163,15 @@ void init_CAN() {
 
 // ---------------- DRIVING CAR ----------------------------
 
+// Sends a CAN message to MC
 void sendCAN(int channel, unsigned char msg[8]) 
 {
   CAN.sendMsgBuf(channel, 0, 8, msg);
 }
 
 
+// Reads @DRIVE_PIN, REVERSE_PIN & NEUTRAL_PIN 
+// readPanel() changes the current car state (drive, reverse, neutral)
 void readPanel() {
   if (digitalRead(DRIVE_PIN) == LOW) {
     isDriving = true;
@@ -201,6 +198,8 @@ void readPanel() {
 
 }
 
+// Sets the values in DRIVE_ARR, BRAKE_ARR or REVERSE_ARR to zero.
+// This stops the car from braking, reversing and reversing
 void resetArrays()
 {
   for(int i = 4; i < 8; i++)
@@ -211,6 +210,7 @@ void resetArrays()
   }
 }
 
+// Pass reference to DRIVE_ARR, BRAKE_ARR or REVERSE_ARR to the value in @ieee754 string 
 void IEEE754ToArray(unsigned char (&brake_drive_reverse)[8], String ieee754)
 {
   for (int i = 0; i < 4; i++) {
@@ -228,22 +228,21 @@ void IEEE754ToArray(unsigned char (&brake_drive_reverse)[8], String ieee754)
     }
 }
 
+// Used to apply break to the vehicle
 void brake(double brakePot)
 {
-  inCruiseControl = false; // EXIT CRUISE CONTROL
-
   String ieee754 = IEEE754(brakePot);
   IEEE754ToArray(BRAKE_ARR, ieee754);
   
   Serial.print("BRAKE: ");
   Serial.println(brakePot);
-  //sendCAN(0x501, BRAKE_ARR);
+  sendCAN(0x501, BRAKE_ARR);
 }
 
-void driveCAR(double driveReversePot, double brakePot) {
+void driveCAR(float driveReversePot, float brakePot) {
   // Input potential will be between 0 - 1024
-  driveReversePot = driveReversePot / 1024.0;
-  brakePot = brakePot / 1024.0;
+  driveReversePot = driveReversePot / max_gas_potential;
+  brakePot = brakePot / max_brake_potential;
 
   sendCAN(0x502, BUS_VOLTAGE);
   /* ---------- NEUTRAL ----------- */
@@ -323,6 +322,13 @@ void setup() {
 
   init_CAN();
 
+  /*
+    DRIVE_PIN = 7, REVERSE_PIN = 8, NEUTRAL_PIN = 6
+    INPUT_BRAKE_PIN = A0, INPUT_GAS_PIN = A1
+    INPUT_CRUISE_CONTROL_PIN = 2, INPUT_CRUISE_CONTROL_INCREASE_PIN = 1, INPUT_CRUISE_CONTROL_DECREASE_PIN = 0
+    INPUT_DRIVING_MODES_PIN = 3
+  */
+
   // Pins for DRIVE, REVERSE & NEUTRAL
   pinMode(DRIVE_PIN, INPUT_PULLUP);
   pinMode(REVERSE_PIN, INPUT_PULLUP);
@@ -333,24 +339,193 @@ void setup() {
   pinMode(INPUT_GAS_PIN, INPUT);
 
   // Pins for CRUISE CONTROL
-  pinMode(INPUT_CRUISE_CONTROL_PIN, INPUT);
-  pinMode(INPUT_CRUISE_CONTROL_INCREASE_PIN, INPUT);
-  pinMode(INPUT_CRUISE_CONTROL_DECREASE_PIN, INPUT);
+  pinMode(INPUT_CRUISE_CONTROL_PIN, INPUT_PULLUP);
+  pinMode(INPUT_CRUISE_CONTROL_INCREASE_PIN, INPUT_PULLUP);
+  pinMode(INPUT_CRUISE_CONTROL_DECREASE_PIN, INPUT_PULLUP);
+
+  // SAFETY PIN
+  pinMode(4, INPUT_PULLUP);
 
   // Pins for ECO & RACING mode
-  pinMode(INPUT_DRIVING_MODES_PIN, INPUT);
+  pinMode(INPUT_DRIVING_MODES_PIN, INPUT_PULLUP);
 
+  Wire.begin(9); // For I2C to screen
   Wire.begin(8); // For I2C communication to LoRa
+  
+
+  debugln("SET POTENTIALS NOW!")
+  unsigned long start_time = millis();
+  int mean_potential_counter = 0;
+  float mean_gas_reverse_potential = 0;
+  float mean_brake_potential = 0;
+  while(millis() - start_time < 15000) // 15 seconds to put starting potentials
+  {
+    float gas_N_reverse_potential = analogRead(INPUT_GAS_PIN);
+    float brake_potential = analogRead(INPUT_BRAKE_PIN);
+    
+    if(mean_potential_counter == 4)
+    {
+      gas_N_reverse_potential = mean_gas_reverse_potential/mean_potential_counter;
+      brake_potential = mean_brake_potential/mean_potential_counter;
+
+      if(gas_N_reverse_potential > max_gas_potential){max_gas_potential = gas_N_reverse_potential; debugln("New max_gas: " + String(max_gas_potential));}
+      if(gas_N_reverse_potential < min_gas_potential){min_gas_potential = gas_N_reverse_potential; debugln("New min_gas: " + String(min_gas_potential));}
+      if(brake_potential > max_brake_potential){max_brake_potential = brake_potential; debugln("New max_brake: " + String(max_brake_potential));}
+      if(brake_potential < min_brake_potential){min_brake_potential = brake_potential; debugln("New min_brake: " + String(min_brake_potential));}
+
+      mean_potential_counter = 0;
+      mean_gas_reverse_potential = 0;
+      mean_brake_potential = 0;
+    }
+    else
+    {
+      mean_gas_reverse_potential += gas_N_reverse_potential;
+      mean_brake_potential += brake_potential;
+      mean_potential_counter++;
+    }
+  }
+  debugln("POTENTIALS SET:")
+  debugln("Max gas: " + String(max_gas_potential) + ", Min gas: " + String(min_gas_potential));
+  debugln("Max brake: " + String(max_brake_potential) + ", Min brake: " + String(min_brake_potential));
+  delay(5000);
+
+  isNeutral = false;
+  isDriving = true;
+  inCruiseControl = true;
+  velocityCruiseControl = 7;
 }
 
-void loop() {
-
+int currentECOButtonHoldIterations = 0;
+void switchToECOMode()
+{
+  bool buttonPressECO = digitalRead(INPUT_DRIVING_MODES_PIN) == LOW;
   
+  if (currentECOButtonHoldIterations == 1000) {
+    currentECOButtonHoldIterations = 0;
+
+    if (buttonPressECO == true) 
+    {
+      inECO = !inECO;
+      debugln("inECO = " + String(inECO));
+    } 
+
+  }
+  else
+  {
+    currentECOButtonHoldIterations++;
+  }  
+}
+
+int currentCruiseButtonHoldIterations = 0;
+void switchToCruiseMode()
+{
+  bool buttonPressCruise = digitalRead(INPUT_CRUISE_CONTROL_PIN) == LOW;
+  
+  if (currentCruiseButtonHoldIterations == 1000) {
+    currentCruiseButtonHoldIterations = 0;
+
+    if (buttonPressCruise == true && isDriving == true) 
+    {
+      inCruiseControl = !inCruiseControl;
+
+      debugln("inCruise = " + String(inCruiseControl));
+
+      if(inCruiseControl == true)
+      {
+        velocityCruiseControl = vehicleVelocity;
+        debugln("VelocityCruise = " + String(velocityCruiseControl));
+      }
+      
+    } 
+
+  }
+  else
+  {
+    currentCruiseButtonHoldIterations++;
+  }  
+}
+
+// -------------- ECO CONTROL ---------------------
+// Read input values and update cruise control values if cruise is activated
+void applyCruiseControl(float& gas_N_reverse_potential, float& brake_potential)
+{
+  double gas_increment = 1.5;
+  double brake_increment = 1;
+  // If cruise control is activated
+  if(inCruiseControl)
+  {
+    // Increment or decrement cruise control speed if corresponding buttons are pressed
+    if(digitalRead(INPUT_CRUISE_CONTROL_INCREASE_PIN) == LOW)
+    {
+      velocityCruiseControl += 2;
+      debugln("New cruise_velocity: " + String(velocityCruiseControl));
+    }
+    if(digitalRead(INPUT_CRUISE_CONTROL_DECREASE_PIN) == LOW)
+    {
+      velocityCruiseControl -= 2;
+      debugln("New cruise_velocity: " + String(velocityCruiseControl));
+    }
+
+    // Compute the error between desired and current speed
+    float velocityError = velocityCruiseControl - vehicleVelocity; // SetVelocity - CurrentVelocity
+    float velocityErrorOffset = 0.1;
+    float velocityBrakeErrorOffset = 2;
+
+    // If the speed is too low, apply more gas
+    if(velocityError > velocityErrorOffset)
+    {
+      cruiseBrakeApplied = 0.0;
+      brake_potential = 0.0;
+      cruiseGasApplied += gas_increment;
+      gas_N_reverse_potential = cruiseGasApplied;
+    }
+    // If the speed is too high, apply more brake
+    else if(velocityError < velocityBrakeErrorOffset)
+    {
+      cruiseGasApplied = 0.0;
+      gas_N_reverse_potential = 0.0;
+      cruiseBrakeApplied += brake_increment;
+      brake_potential = cruiseBrakeApplied;
+    }
+    // If the speed is within a tolerance range, maintain the current speed
+    else
+    {
+      cruiseGasApplied = 0.0;
+      cruiseBrakeApplied = 0.0;
+      brake_potential = 0;
+      gas_N_reverse_potential = 0;
+
+    }
+
+    // Set the gas and brake potentials based on the applied values
+    //gas_N_reverse_potential = potentialCruiseControl + cruiseGasApplied;
+    //brake_potential = cruiseBrakeApplied;
+
+    /* If potentials are greater or smaller then MIN and MAX
+    if(gas_N_reverse_potential > max_gas_potential){gas_N_reverse_potential=max_gas_potential;}
+    if(gas_N_reverse_potential < min_gas_potential){gas_N_reverse_potential=min_gas_potential;}
+    if(brake_potential > max_brake_potential){brake_potential=max_brake_potential;}
+    if(brake_potential < min_brake_potential){brake_potential=min_brake_potential;}*/
+
+  }
+}
+
+// -------------- ECO CONTROL ---------------------
+// Read input values and update cruise control values if cruise is activated
+void applyECOControl(float& gas_N_reverse_potential, float& brake_potential)
+{
+
+}
+
+
+void loop() {
+  if(digitalRead(4) == LOW)
+  {
   unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
   if(CAN_available > 0){
 
     unsigned long start_time = millis();
-    while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 0.1) {
+    while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 0.14) {
         
         // read data,  len: data length, buf: data buf
         unsigned char len = 0;
@@ -363,12 +538,12 @@ void loop() {
         for (int i = 0; i < len; i++) 
         {
            CAN_data += String(CAN_buf[i]) + ' ';
-           debug(CAN_buf[i]); debug("\t");
+           //debug(CAN_buf[i]); debug("\t");
         }
         //Serial.println(CAN_data);
 
         String full_CAN_data = CAN_ID + ' ' + CAN_data;
-        debugln("Full CAN data: " + full_CAN_data);
+        //debugln("Full CAN data: " + full_CAN_data);
         
         //Sending CAN_data over I2C
         Wire.beginTransmission(8);
@@ -379,7 +554,7 @@ void loop() {
         if(CAN_ID == "1027")
         {
           vehicleVelocity = extractBytesToDecimal(CAN_data, 4, 4);
-          debugln("Vehicle velocity: " + String(vehicleVelocity));
+          //debugln("Vehicle velocity: " + String(vehicleVelocity));
         }
     }
   }
@@ -388,69 +563,43 @@ void loop() {
   readPanel();
 
   // Get driving potentials
-  int gas_N_reverse_potential = analogRead(INPUT_GAS_PIN);
-  int brake_potential = analogRead(INPUT_BRAKE_PIN);
+  float gas_N_reverse_potential = analogRead(INPUT_GAS_PIN);
+  float brake_potential = analogRead(INPUT_BRAKE_PIN);
+
+  // Transmit I2C potentials to screen
+  Wire.beginTransmission(10);
+  Wire.write(("." + String(int(gas_N_reverse_potential))).c_str());
+  Wire.write((", " + String(int(vehicleVelocity))).c_str());
+  Wire.write((String(int(brake_potential))).c_str());
+  Wire.endTransmission();   
   
-  if(inCruiseControl && isDriving)
-  {
-    int velocityOffset = 3; // Ex if set cruise is 80, 77 -> 83 is OK
-    float brakeIncrease = 0.01; // Adjust if braking should be faster
-    float gasIncrease = 0.01; // Adjust if gas should be faster
+  debugln("IN_CRUISE=" + String(inCruiseControl));
+  // Exit cruise if sudden gas or brake is applied
+  debugln("Last_brake:" + String(last_brake_potential));
+  if((gas_N_reverse_potential-250 > last_gas_N_reverse_potential || brake_potential-250 > last_brake_potential) && last_brake_potential != 1/1337) {inCruiseControl = false;}
+  last_gas_N_reverse_potential = gas_N_reverse_potential;
+  last_brake_potential = brake_potential;
 
-    if(vehicleVelocity > velocityCruiseControl + velocityOffset) // If speed is above threshold
-    {
-      gas_N_reverse_potential = 0;
-      cruiseGasApplied
+  debugln("gas_N_reverse_potential before: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
+  
+  
+  applyCruiseControl(gas_N_reverse_potential, brake_potential); // IF IN CRUISE CONTROL UPDATE gas_N_reverse_potential and brake_potential
 
-      if(lastVehicleVelocity + 0.5 < vehicleVelocity) // If brake is affecting speed dont increase brake
-      {
-        brake_potential = cruiseBrakeApplied;
-      }
-      else // If brake is NOT affecting speed increase brake
-      {
-        cruiseBrakeApplied += brakeIncrease;
-        brake_potential = cruiseBrakeApplied;
-      }
-    }
 
-    else if(vehicleVelocity < velocityCruiseControl - velocityOffset) // If speed is below threshold
-    {
-      if(lastVehicleVelocity > vehicleVelocity + 0.5) // If gas is affecting speed dont increase gas
-      {
-        gas_N_reverse_potential = cruiseGasApplied;
-      }
-      else // If gas is NOT affecting speed increase gas
-      {
-        cruiseGasApplied += gasIncrease;
-        gas_N_reverse_potential += cruiseGasApplied;
-      }
-    }
-    else
-    {
-      
-      
-    }
-  }
   lastVehicleVelocity = vehicleVelocity; // Set last vehicle velocity to current velocity
-
+  debugln("gas_N_reverse_potential after: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
+  debugln("Vehicle velocity: " + String(vehicleVelocity) + ", velocityCruiseControl: " + String(velocityCruiseControl));
 
   // Sends drive commands
   driveCAR(gas_N_reverse_potential, brake_potential);
-
-
-  // Check for input of CRUISE CONTROL
-  if(digitalRead(INPUT_CRUISE_CONTROL_PIN) == HIGH && inCruiseControl == false && isDriving)
-  {
-    velocityCruiseControl = vehicleVelocity;
-    potentialCruiseControl = gas_N_reverse_potential
-    inCruiseControl = true;
-  }
+  
+  // LOGIC for CRUISE CONTROL
+  switchToCruiseMode();
 
   // Check for input of ECO mode
-  if(digitalRead(INPUT_DRIVING_MODES_PIN) == HIGH)
-  {
-    inECO = !inECO;
-  }
+  switchToECOMode();
 
+  
+  }
 }
 
