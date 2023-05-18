@@ -400,11 +400,18 @@ void setup() {
   debugln("Max brake: " + String(max_brake_potential) + ", Min brake: " + String(min_brake_potential));
   delay(5000);*/
 
-  // FOR TESTING
+  /*
+  // FOR TESTING CRUISE
   isNeutral = false;
   isDriving = true;
   inCruiseControl = true;
   velocityCruiseControl = 12;
+  */
+
+  // FOR TESTING CRUISE
+  isNeutral = false;
+  isDriving = true;
+  inECO = true;
 }
 
 int currentECOButtonHoldIterations = 0;
@@ -483,7 +490,7 @@ void applyCruiseControl(float& gas_N_reverse_potential, float& brake_potential)
     // Compute the error between desired and current speed
     float velocityError = velocityCruiseControl - vehicleVelocity; // SetVelocity - CurrentVelocity
     float velocityErrorOffset = 0.1;
-    float velocityBrakeErrorOffset = -2;
+    float velocityBrakeErrorOffset = -15;
 
     // If the speed is too low, apply more gas
     if(velocityError > velocityErrorOffset && millis() - lastTimePointVelocityFetched < 1000)
@@ -514,7 +521,7 @@ void applyCruiseControl(float& gas_N_reverse_potential, float& brake_potential)
         potentialCruiseControl -= 1;
         gas_N_reverse_potential = potentialCruiseControl;
       }
-      else if(velocityGapError < -0.02)
+      else if(velocityGapError < (-0.02))
       {
         potentialCruiseControl += 1;
         gas_N_reverse_potential = potentialCruiseControl;
@@ -547,8 +554,17 @@ void applyCruiseControl(float& gas_N_reverse_potential, float& brake_potential)
 
 // -------------- ECO CONTROL ---------------------
 // Read input values and update cruise control values if cruise is activated
-void applyECOControl(float& gas_N_reverse_potential, float& brake_potential)
+void applyECOControl(float& gas_N_reverse_potential)
 {
+  float potential_gap_error = gas_N_reverse_potential - last_gas_N_reverse_potential;
+
+  if(potential_gap_error > 1)
+  {
+    debug("GAS BEFORE ECO: " + String(gas_N_reverse_potential));
+    gas_N_reverse_potential = gas_N_reverse_potential*0.70;
+    debug(", GAS AFTER ECO: " + String(gas_N_reverse_potential));
+    debugln();
+  }
 
 }
 
@@ -578,7 +594,7 @@ void loop() {
         //Serial.println(CAN_data);
 
         String full_CAN_data = CAN_ID + ' ' + CAN_data;
-        debugln("Full CAN data: " + full_CAN_data);
+        //debugln("Full CAN data: " + full_CAN_data);
         
         //Sending CAN_data over I2C
         Wire.beginTransmission(8);
@@ -621,13 +637,12 @@ void loop() {
   // Exit cruise if sudden gas or brake is applied
   debugln("Last_brake:" + String(last_brake_potential));
   if((brake_potential-250 > last_brake_potential) && last_brake_potential != 1/1337) {inCruiseControl = false;}
-  last_gas_N_reverse_potential = gas_N_reverse_potential;
-  last_brake_potential = brake_potential;
 
   debugln("gas_N_reverse_potential before: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
   
   
   applyCruiseControl(gas_N_reverse_potential, brake_potential); // IF IN CRUISE CONTROL UPDATE gas_N_reverse_potential and brake_potential
+  applyECOControl(gas_N_reverse_potential);
 
 
   lastVehicleVelocity = vehicleVelocity; // Set last vehicle velocity to current velocity
@@ -642,8 +657,8 @@ void loop() {
 
   // Check for input of ECO mode
   toggleECOMode();
-
-  
+  last_gas_N_reverse_potential = gas_N_reverse_potential;
+  last_brake_potential = brake_potential;
   }
 }
 
