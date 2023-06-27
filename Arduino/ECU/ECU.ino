@@ -326,38 +326,13 @@ void setup() {
 
   init_CAN();
 
-  /*
-    DRIVE_PIN = 7, REVERSE_PIN = 8, NEUTRAL_PIN = 6
-    INPUT_BRAKE_PIN = A0, INPUT_GAS_PIN = A1
-    INPUT_CRUISE_CONTROL_PIN = 2, INPUT_CRUISE_CONTROL_INCREASE_PIN = 1, INPUT_CRUISE_CONTROL_DECREASE_PIN = 0
-    INPUT_DRIVING_MODES_PIN = 3
-  */
 
   // SAFETY PIN
   pinMode(4, INPUT_PULLUP);
 
   Wire.begin(); // For I2C communication to LoRa
-  Wire.onReceive(I2C_OnReceive);
-  
-
-  /*
-  // FOR TESTING CRUISE
-  isNeutral = false;
-  isDriving = true;
-  inCruiseControl = true;
-  velocityCruiseControl = 12;
-  */
-
-  // FOR TESTING CRUISE
-  isNeutral = false;
-  isDriving = true;
-  inECO = true;
 }
 
-void I2C_OnReceive()
-{
-  
-}
 
 // -------------- CRUISE CONTROL ---------------------
 
@@ -478,11 +453,15 @@ void applyECOControl(float& gas_N_reverse_potential)
   {
     int ECOIncrementStep = 1; // Increase this for harder ACCELERATION in ECO
 
+    /*
     debug("GAS BEFORE ECO: " + String(gas_N_reverse_potential));
+    */
     ECOPotential += ECOIncrementStep;
     gas_N_reverse_potential = ECOPotential;
+    /*
     debug(", GAS AFTER ECO: " + String(gas_N_reverse_potential));
     debugln();
+    */
   }
   else if(potential_gap_error > 5 && !hasAppliedECO)
   {
@@ -501,112 +480,95 @@ void applyECOControl(float& gas_N_reverse_potential)
 
 
 
-void loop() {
-  if(digitalRead(4) == LOW)
+void loop() 
+{
+  float gas_N_reverse_potential = 0;
+  float brake_potential = 0;
+  Wire.requestFrom(8, 7); // Requesting data from screen arduino containing 6 bytes
+  while(Wire.available())
   {
-    float gas_N_reverse_potential = 0;
-    float brake_potential = 0;
-
-    Wire.requestFrom(8, 7); // Requesting data from screen arduino containing 6 bytes
-    while(Wire.available())
-    {
-      gas_N_reverse_potential = Wire.read(); // 5* since the value is divided by 5 before sending
-      brake_potential = Wire.read();
-
-      drivingMode = Wire.read();
-      inCruiseControl = Wire.read();
-      inECO = Wire.read();
-      inStartScreen = Wire.read();
-      cruiseSpeedIncDec = Wire.read();
-
-      debugln("Requested Gas: " + String(5*gas_N_reverse_potential));
-      debugln("Requested Brake: " + String(5*brake_potential));
-      debugln("Requested Drivingmode: " + String(drivingMode));
-      debugln("Requested Cruisecontrol: " + String(inCruiseControl));
-      debugln("Requested Eco: " + String(inECO));
-      debugln("Requested inStartScreen: " + String(inStartScreen));
-      debugln("Requested CruiseIncDec: " + String(cruiseSpeedIncDec));
-    }
-  
-    unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
-    if(CAN_available > 0){
-
-      unsigned long start_time = millis();
-      while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 120) {
-          // read data,  len: data length, buf: data buf
-          unsigned char len = 0;
-
-          CAN.readMsgBuf(&len, CAN_buf);
-
-          String CAN_ID = String(CAN.getCanId());
-          String CAN_data = "";
-          // print the data
-          for (int i = 0; i < len; i++) 
-          {
-             CAN_data += String(CAN_buf[i]) + ' ';
-             //debug(CAN_buf[i]); debug("\t");
-          }
-          //Serial.println(CAN_data);
-
-          String full_CAN_data = CAN_ID + ' ' + CAN_data;
-          //debugln("Full CAN data: " + full_CAN_data);
-
-          //Sending CAN_data over I2C
-          Wire.beginTransmission(8);
-          Wire.write(full_CAN_data.c_str());
-          Wire.endTransmission();
-
-          Wire.beginTransmission(9);
-          Wire.write(full_CAN_data.c_str());
-          Wire.endTransmission();
-
-
-          // Extract vehicle velocity speed
-          if(CAN_ID == "1027")
-          {
-            vehicleVelocity = extractBytesToDecimal(CAN_data, 4, 4);
-            lastTimePointVelocityFetched = millis();
-            //debugln("Vehicle velocity: " + String(vehicleVelocity));
-          }
-
-          // Extract bus_current
-          if(CAN_ID == "1026")
-          {
-            busCurrent = extractBytesToDecimal(CAN_data, 4, 4);
-            debugln("Bus current: " + String(busCurrent));
-            //delay(800);
-          }
-
-      }
-    }
-    //delay(10); IF I2C NOT WORKING UN-COMMENT THIS <------------
-
-    readPanel();
-    enterCruiseControl();
-
-    //debugln("IN_CRUISE=" + String(inCruiseControl));
-    // Exit cruise if sudden gas or brake is applied
-    //debugln("Last_brake:" + String(last_brake_potential));
-    
-    debugln("gas_N_reverse_potential before: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
-
-
-    applyCruiseControl(gas_N_reverse_potential, brake_potential); // IF IN CRUISE CONTROL UPDATE gas_N_reverse_potential and brake_potential
-    applyECOControl(gas_N_reverse_potential);
-  
-
-    // Sends drive commands if not in start screen
-    if(!inStartScreen)
-    {
-      driveCAR(gas_N_reverse_potential, brake_potential);
-    }
-
-    last_gas_N_reverse_potential = gas_N_reverse_potential;
-    last_brake_potential = brake_potential;
-    lastVehicleVelocity = vehicleVelocity; // Set last vehicle velocity to current velocity
-    debugln("gas_N_reverse_potential after: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
-    debugln("Vehicle velocity: " + String(vehicleVelocity) + ", velocityCruiseControl: " + String(velocityCruiseControl));
-    lastCruiseSpeedIncDec = cruiseSpeedIncDec;
-    lastInCruiseControl = inCruiseControl;
+    gas_N_reverse_potential = Wire.read(); // 5* since the value is divided by 5 before sending
+    brake_potential = Wire.read();
+    drivingMode = Wire.read();
+    inCruiseControl = Wire.read();
+    inECO = Wire.read();
+    inStartScreen = Wire.read();
+    cruiseSpeedIncDec = Wire.read();
+    /*
+    debugln("Requested Gas: " + String(5*gas_N_reverse_potential));
+    debugln("Requested Brake: " + String(5*brake_potential));
+    debugln("Requested Drivingmode: " + String(drivingMode));
+    debugln("Requested Cruisecontrol: " + String(inCruiseControl));
+    debugln("Requested Eco: " + String(inECO));
+    debugln("Requested inStartScreen: " + String(inStartScreen));
+    debugln("Requested CruiseIncDec: " + String(cruiseSpeedIncDec));
+    */
   }
+
+  unsigned char CAN_available = !digitalRead(CAN_INT_PIN);
+  if(CAN_available > 0){
+    unsigned long start_time = millis();
+    while (CAN_MSGAVAIL == CAN.checkReceive() && millis() - start_time < 120) {
+        // read data,  len: data length, buf: data buf
+        unsigned char len = 0;
+        CAN.readMsgBuf(&len, CAN_buf);
+        String CAN_ID = String(CAN.getCanId());
+        String CAN_data = "";
+        // print the data
+        for (int i = 0; i < len; i++) 
+        {
+           CAN_data += String(CAN_buf[i]) + ' ';
+           //debug(CAN_buf[i]); debug("\t");
+        }
+        //Serial.println(CAN_data);
+        String full_CAN_data = CAN_ID + ' ' + CAN_data;
+        //debugln("Full CAN data: " + full_CAN_data);
+        //Sending CAN_data over I2C
+        Wire.beginTransmission(8);
+        Wire.write(full_CAN_data.c_str());
+        Wire.endTransmission();
+        Wire.beginTransmission(9);
+        Wire.write(full_CAN_data.c_str());
+        Wire.endTransmission();
+        // Extract vehicle velocity speed
+        if(CAN_ID == "1027")
+        {
+          vehicleVelocity = extractBytesToDecimal(CAN_data, 4, 4);
+          lastTimePointVelocityFetched = millis();
+          //debugln("Vehicle velocity: " + String(vehicleVelocity));
+        }
+        // Extract bus_current
+        if(CAN_ID == "1026")
+        {
+          busCurrent = extractBytesToDecimal(CAN_data, 4, 4);
+          //debugln("Bus current: " + String(busCurrent));
+          //delay(800);
+        }
+    }
+  }
+  //delay(10); IF I2C NOT WORKING UN-COMMENT THIS <------------
+  readPanel();
+  enterCruiseControl();
+  
+  /*
+  debugln("gas_N_reverse_potential before: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
+  */
+
+  applyCruiseControl(gas_N_reverse_potential, brake_potential); // IF IN CRUISE CONTROL UPDATE gas_N_reverse_potential and brake_potential
+  applyECOControl(gas_N_reverse_potential);
+
+  // Sends drive commands if not in start screen
+  if(!inStartScreen)
+  {
+    driveCAR(gas_N_reverse_potential, brake_potential);
+  }
+  last_gas_N_reverse_potential = gas_N_reverse_potential;
+  last_brake_potential = brake_potential;
+  lastVehicleVelocity = vehicleVelocity; // Set last vehicle velocity to current velocity
+  /*
+  debugln("gas_N_reverse_potential after: " + String(gas_N_reverse_potential) + ", brake: " + String(brake_potential));
+  debugln("Vehicle velocity: " + String(vehicleVelocity) + ", velocityCruiseControl: " + String(velocityCruiseControl));
+  */
+  lastCruiseSpeedIncDec = cruiseSpeedIncDec;
+  lastInCruiseControl = inCruiseControl;
 }
